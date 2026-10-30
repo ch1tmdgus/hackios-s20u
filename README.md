@@ -1,60 +1,35 @@
-# HackiOS — userland
+# HackiOS on Galaxy S20 Ultra (z3q)
 
-The user-space half of **HackiOS**: Apple's open-source XNU kernel on Android phone hardware (POCO X5 Pro 5G) and in
-QEMU, running the unmodified iOS 16.5 user space. The kernel, loader, UEFI and the `common/` scripts are in
-[hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel) — **start there**.
+Experimental iOS 16 / XNU port for **Samsung Galaxy S20 Ultra 5G SM-G988N, Snapdragon 865 / Adreno 650**. This repository contains the source and local port changes; hardware support is incomplete.
 
-> **No Apple files are in this repository.** `ios165/fetch.sh` downloads the iOS 16.5 IPSW from Apple's CDN to your
-> machine and extracts what is needed there. HackiOS is an independent research project by OOSEX GANG and is not
-> affiliated with, authorised or endorsed by Apple Inc.
+Based on [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland), the HackiOS XNU port, and [G986N-iOS](https://github.com/leh0726/G986N-iOS). See [the upstream port notes](docs/UPSTREAM-PORT-README.md) and [z3q hardware notes](docs/Z3Q.md).
 
-## Getting it
+## Status (2026-10-30)
 
-The two repositories are built as one tree. Clone the kernel repository and let it bring this one in:
+- iOS home screen boots using an uploaded RAM system image.
+- Samsung sec_ts touch and both volume keys work in device tests.
+- Mesa/freedreno reports **FD650** for CoreAnimation OpenGL ES; GPU rendering is confirmed. Tested display submission intervals ranged around 35–53 frames/s; these are not a controlled benchmark.
+- CPU frequency control and seven XNU cores work; a core remains with the loader.
+- BCM4375 Wi-Fi associates and passes data. Intermittent disconnects remain; the SNonce retry patch is experimental and does not establish that rekeying is fixed.
+- Speaker output is **not implemented for z3q**. The ADSP patch adds the Samsung carveout and relocatable firmware handling, with Samsung runs restricted to diagnostic steps 1–2. It has compiled but awaits physical validation.
+- USB file transfer / SSH while running iOS is **not implemented**. Loader USB is a separate capability.
 
-```sh
-git clone https://github.com/oosexgang/hackios-xnu-kernel.git hackios
-cd hackios
-common/setup.sh        # checks this repository out into the same directory (git dir .userland.git)
-common/ugit status     # git for this repository inside that tree
-```
+## Build and private inputs
 
-## What is here
+Use `common/build.sh z3q` in the Linux cross-build environment described by the source scripts. A macOS host can use an ARM64 Linux Docker container. The toolchain, iPhoneOS SDK and iOS extraction must be supplied locally. `prebuilt` from older ports may lack the Samsung touch/Wi-Fi changes: build the kernel from source.
 
-| Path | What |
-|---|---|
-| `userland/build.sh` | builds the APFS images: `root.apfs` (our init, libraries, launchd jobs, firmware) and `system.apfs` (the selected part of iOS 16.5 and its cryptexes); every option is documented at the top |
-| `userland/src/` | `init.c` (process 1), injected libraries (`inject.c` backboardd, `inject_sb.c` SpringBoard, `inject_media.c` mediaserverd, `inject_tweaks.c`), the CoreAudio output device (`audio_plugin.c`), the OpenGL ES bridge to Mesa (`eagl.c`), Metal driver work, tests |
-| `userland/libmini/` | a tiny libc for the static programs |
-| `userland/rc.*`, `com.redwood.*.plist` | job lists and launchd jobs for test scenarios (`RC_JOBS=rc.jobs.tour`, `rc.jobs.ssh`, ...) |
-| `userland/mkjobs.py`, `jobinfo.py` | the stock iOS launchd jobs: which are loaded, who provides a Mach service |
-| `userland/var/` | our default preferences for `/private/var` |
-| `ios165/` | `fetch.sh` / `fetch-from-ipsw.py` (take iOS out of the IPSW), `select-system.py` (what goes into the image) |
-| `tools/apfs/` | APFS on the computer: `mkapfs.py` (image writer), reader, checks, write tests |
-| `tools/mk-mesa.sh`, `tools/mesa/` | Mesa 25.0.7 with our patches: freedreno on Darwin, the AIR (Metal IR) frontend |
-| `tools/air/`, `tools/metal/`, `tools/metallib.py` | Metal shader (AIR) checks and analysis; notes in `docs/air.md` |
-| `tools/mk-jb.sh`, `jb-preinstall.py` | Procursus bootstrap + Sileo for the package manager prefix |
-| `tools/font_trim.py` | trims two oversized iOS fonts so the image fits |
-| `prebuilt/userland/` | our programs and libraries, built — used when there is no cross toolchain |
+For graphics, build `AIR=1 tools/mk-mesa.sh`, then build userland with `GL=1` and compilation enabled (`PREBUILT=`). Verify that the resulting `root.apfs` contains `libOSMesa.8.dylib` and `libredwood-gl.dylib`. `gpu=1` alone does not provide the userland renderer.
 
-## Building the images
+Example after uploading the system RAM image with `XL_DEVICE=z3q ./xl ramdisk`:
 
 ```sh
-ios165/fetch.sh               # once
-REST=1 userland/build.sh      # -> userland/root.apfs, userland/system.apfs
-GL=1 REST=1 userland/build.sh # with OpenGL ES (Mesa) for the window server; on the phone with gpu=1
+env XL_DEVICE=z3q XL_SECS=300 XL_CMDLINE="cpus=8 bootcpu=7 cpufreq=1 touchscreen=1 buttons=1 gpu=1 wifi=1" ./xl run
 ```
 
-Without the cross toolchain (theos + iPhoneOS16.5.sdk, see the kernel repository) the build takes our programs from
-`prebuilt/userland`; with it, it compiles `userland/src`.
+`XL_SECS=0` disables the kernel return timer, but the current host script may incorrectly report a timeout after about 100 seconds. An unlimited run is not a stability guarantee.
 
-A job list (`RC_JOBS=file`) is run by our `init`, not by a shell: iOS 16.5's root has no shell, lines are split on
-blanks, there is no quoting and no variable assignment; only `>> FILE` and a trailing `&` are understood.
+This source upload excludes Apple system images/SDKs, device-extracted firmware, private keys, Wi-Fi credentials/MAC files, logs, partition backups and newly extracted UEFI binaries. The z3q DTB and UEFI vendor inputs must be supplied locally. Do not use another device's BOOT backup or partition geometry. Samsung uses the TWRP boot path; a generic `fastboot boot` command does not apply.
 
-## Licenses
+## Licensing
 
-Our code in this repository is released under the [MIT License](LICENSE). Mesa (MIT) is not in the
-repository: `tools/mk-mesa.sh` fetches release 25.0.7, `tools/mesa/*.patch` are our changes to it. apfsprogs
-(GPL-2.0) is not in the repository either: `tools/apfs/check-image.sh` fetches and builds only `apfsck`.
-
-OOSEX GANG — [t.me/oosexgangdevs](https://t.me/oosexgangdevs)
+Preserve per-file copyright notices. `LICENSE` is APSL 2.0 for the XNU portion; `LICENSE-userland` retains the upstream MIT license for the userland portion. Other imported source files retain their own notices.

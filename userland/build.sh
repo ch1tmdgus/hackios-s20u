@@ -75,6 +75,10 @@
 #                    the kernel's apfs_lib has to read every volume back as the directory it was made of
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
 set -e
+set -o pipefail
+# The images keep the modes the files have here, and launchd refuses a job whose plist anyone but
+# root may write ("bad ownership/permissions", error 122): a umask of 002 would give them all g+w.
+umask 022
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
 
@@ -364,7 +368,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		fi
 	fi
 	# (drawable_test is built in the same block as surf_test, so it is copied with it)
-	cp obj/hello_dyn obj/svc_test obj/surf_test obj/drawable_test obj/rwtouch obj/mg_test root/bin/
+	cp obj/hello_dyn obj/svc_test obj/surf_test obj/rwtouch obj/mg_test root/bin/
+	[ -f obj/drawable_test ] && cp obj/drawable_test root/bin/  # (prebuilt/userland does not ship it)
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
@@ -494,9 +499,35 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	cp $IOS/var.skel root/etc/var.skel              # the directories init creates in /private/var
 	# time zones: the template's links go in a circle until the time zone daemon has run (/usr/share/zoneinfo
 	# points back into /var); point them at the data that ships with the system, and use this machine's zone
-	zone=$(timedatectl show -p Timezone --value 2>/dev/null); zone=${zone:-UTC}
-	sed -i -e 's|^l\t/usr/share/zoneinfo\t/private/var/db/timezone/zoneinfo$|l\t/usr/share/zoneinfo.default\t/private/var/db/timezone/zoneinfo|' \
-		-e "s|^l\t/var/db/timezone/zoneinfo/[^\t]*\t/private/var/db/timezone/localtime\$|l\t/var/db/timezone/zoneinfo/$zone\t/private/var/db/timezone/localtime|" root/etc/var.skel
+	python3 - root/etc/var.skel <<'PYZONE'
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+zone = os.environ.get("TZ", "").lstrip(":")
+if not zone and shutil.which("timedatectl"):
+    result = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        zone = result.stdout.strip()
+if not zone:
+    localtime = os.path.realpath("/etc/localtime")
+    zone = localtime.split("/zoneinfo/", 1)[1] if "/zoneinfo/" in localtime else "UTC"
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines()
+for i, line in enumerate(lines):
+    fields = line.split("\t")
+    if len(fields) == 3 and fields[0] == "l":
+        if fields[1:] == ["/usr/share/zoneinfo", "/private/var/db/timezone/zoneinfo"]:
+            fields[1] = "/usr/share/zoneinfo.default"
+        elif fields[1].startswith("/var/db/timezone/zoneinfo/") and fields[2] == "/private/var/db/timezone/localtime":
+            fields[1] = "/var/db/timezone/zoneinfo/" + zone
+        lines[i] = "\t".join(fields)
+p.write_text("\n".join(lines) + "\n")
+print("build.sh: timezone " + zone)
+PYZONE
 	# ... and the files of ours it puts there (var/): those under mobile/ belong to the user mobile
 	cp -r var root/var
 	(cd var && find . -type f | sed 's|^\./||' | sort) | while read -r f; do
@@ -550,6 +581,21 @@ fi
 if [ -d ../fw-gpu ]; then
 	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
+fi
+# ... and the Galaxy S20+'s Broadcom BCM4375 (B1): its firmware and one of its NVRAMs, the phone's
+# /vendor/firmware/bcmdhd_sta.bin_b1 and nvram.txt_* in ../fw-wifi-y2q, the NVRAM turned into what the chip
+# reads (tools/brcm-nvram.py); for bsd/dev/redwood_pcie.c's step 9. Y2Q_NVRAM picks the module's file.
+# Linux's brcmfmac (tools/mk-brcmfmac.sh) reads the NVRAM as text and converts it itself, and loads the
+# radio's regulatory data (CLM blob): those two as they are, for it.
+if [ -f ../fw-wifi-y2q/bcmdhd_sta.bin_b1 ]; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-wifi-y2q/bcmdhd_sta.bin_b1 root/fw/bcm4375_sta.bin
+	python3 -I ../tools/brcm-nvram.py ../fw-wifi-y2q/nvram.txt_${Y2Q_NVRAM:-CS01_semco_b1} root/fw/bcm4375_nvram.bin
+	install -m 0644 ../fw-wifi-y2q/nvram.txt_${Y2Q_NVRAM:-CS01_semco_b1} root/fw/bcm4375_nvram.txt
+	[ -f ../fw-wifi-y2q/bcmdhd_clm.blob ] && install -m 0644 ../fw-wifi-y2q/bcmdhd_clm.blob root/fw/bcm4375_clm.blob
+	# the network to join, as for redwood below (fw-wifi/network): name, then passphrase; not with SHARE=1
+	rm -f root/fw/network
+	if [ -z "$SHARE" ] && [ -f ../fw-wifi-y2q/network ]; then install -m 0600 ../fw-wifi-y2q/network root/fw/network; fi
 fi
 # ... and the image of the Wi-Fi DSP, from /vendor/firmware_mnt/image of the same Android into ../fw-wifi
 # (bsd/dev/redwood_wifi.c; 7.6 MB), with what the radio's firmware is sent once it runs: this phone's
@@ -623,7 +669,23 @@ fi
 # NanoLaunchDaemons and LaunchAngels with,
 # xpc without launchd.plist (launchd would read that list of all of iOS's jobs instead of
 # LaunchDaemons) and the audio server's plug-in directory with only our device in it.
-mkdir -p root/empty root/xpc root/hal
+mkdir -p root/empty root/xpc root/hal root/angels
+# the launch angels (apps launchd starts in the user's domain) SpringBoard looks up, taken from the iOS
+# volume: PosterBoard (the lock screen's posters, com.apple.posterboardservices.services) and
+# AccessibilityUIServer (Settings > Accessibility); the volume's other ten stay hidden
+ANGELS=${ANGELS-"com.apple.PosterBoard com.apple.AccessibilityUIServer"}
+ANGEL_SOURCE=
+for f in $IOS/rootfs.apfs $IOS/rootfs.dmg; do [ -f $f ] && { ANGEL_SOURCE=$f; break; }; done
+if [ -n "$ANGELS" ] && [ -n "$ANGEL_SOURCE" ]; then
+	for a in $ANGELS; do
+		7z e -y -oroot/angels "$ANGEL_SOURCE" "System/Library/LaunchAngels/$a.plist" > /dev/null 2>&1 ||
+			echo "build.sh: no launch angel $a in $ANGEL_SOURCE"
+	done
+	chmod 644 root/angels/*.plist 2>/dev/null
+	echo "build.sh: launch angels: $(ls root/angels | tr '\n' ' ')"
+elif [ -n "$ANGELS" ]; then
+	echo "build.sh: no iOS volume image ($IOS/rootfs.apfs or rootfs.dmg; KEEP=1 ios165/fetch.sh): no launch angels"
+fi
 for f in extensions.plist extensions.plist.sig; do
 	[ -f $IOS/rootfs/System/Library/xpc/$f ] && cp $IOS/rootfs/System/Library/xpc/$f root/xpc/
 done

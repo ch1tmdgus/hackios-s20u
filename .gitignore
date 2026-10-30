@@ -1,37 +1,40 @@
-# A whitelist. In a workspace made by hackios-xnu-kernel's common/setup.sh this repository shares its
-# working tree with the kernel repository; this file then lives in .userland.git/info/exclude
-# (common/userland.exclude) instead, and only the files named here belong to it.
+# A whitelist: the working tree also holds gigabytes of downloads, build output, logs, third-party
+# clones and files of iOS, none of which belongs in this repository (common/bootstrap.sh fetches or
+# builds all of it again). Nothing is tracked unless it is named here.
+#
+# G986N-iOS carries both of HackiOS's repositories in one: hackios-xnu-kernel's files and
+# hackios-xnu-userland's (userland/, ios165/'s scripts, the userland's tools, docs and prebuilt/userland),
+# with their histories merged, and the Galaxy S20+ (y2q) port on top.
 /*
 !/.gitignore
 !/README.md
 !/LICENSE
+!/LICENSE-userland
+!/README.ko.md
+!/common/
+!/docs/
+!/xl
+!/mkxnuimg.py
+!/xnu-build.sh
+!/xnu-env.sh
+!/xnuloader/
+!/qemu/
+!/tools/
+!/xnu/
+!/xnu-deps/
+!/uefi/
+!/prebuilt/
+!/wifi/
 !/userland/
 !/ios165/
-!/prebuilt/
-!/tools/
-!/docs/
 
 __pycache__/
 *~
 *.orig
 *.rej
+*.part
 
-/prebuilt/*
-!/prebuilt/userland/
-/docs/*
-!/docs/air.md
-!/docs/air-report.md
-/tools/*
-!/tools/apfs/
-!/tools/air/
-!/tools/mesa/
-!/tools/metal/
-!/tools/mk-mesa.sh
-!/tools/mk-jb.sh
-!/tools/jb-preinstall.py
-!/tools/font_trim.py
-!/tools/metallib.py
-
+# of the userland only the sources (userland/build.sh builds the rest; userland/obj, the images)
 /userland/*
 !/userland/build.sh
 !/userland/*.py
@@ -41,6 +44,64 @@ __pycache__/
 !/userland/libmini/
 !/userland/var/
 
+# of ios165 only the scripts (ios165/fetch.sh takes iOS out of Apple's IPSW onto this machine)
 /ios165/*
 !/ios165/fetch.sh
 !/ios165/*.py
+
+/xnuloader/*
+!/xnuloader/build.sh
+!/xnuloader/efi.h
+!/xnuloader/identity.h
+!/xnuloader/loader.c
+!/xnuloader/mkidentity.py
+!/xnuloader/mkpayload.py
+
+/qemu/*
+!/qemu/*.sh
+!/qemu/*.py
+
+# of xnu-deps only what is ours; setup.sh fetches and builds the rest
+/xnu-deps/*
+!/xnu-deps/setup.sh
+!/xnu-deps/gen-iig-stubs.py
+!/xnu-deps/hostinc/
+!/xnu-deps/iig-impl/
+!/xnu-deps/host/
+/xnu-deps/host/*
+!/xnu-deps/host/bin/
+/xnu-deps/host/bin/*
+!/xnu-deps/host/bin/codesign
+!/xnu-deps/host/bin/iig
+!/xnu-deps/host/bin/install
+!/xnu-deps/host/bin/plutil
+!/xnu-deps/host/bin/sw_vers
+!/xnu-deps/host/bin/xcrun
+!/xnu-deps/host/bin/xnu-clang
+!/xnu-deps/build/
+/xnu-deps/build/*
+!/xnu-deps/build/pthread/
+/xnu-deps/build/pthread/*
+!/xnu-deps/build/pthread/build.sh
+!/xnu-deps/build/pthread/inc/
+!/xnu-deps/build/lzbitmap/
+/xnu-deps/build/lzbitmap/*
+!/xnu-deps/build/lzbitmap/unzbm.c
+!/xnu-deps/build/lzbitmap/libzbitmap.c
+!/xnu-deps/build/lzbitmap/libzbitmap.h
+/tools/android/f2fs-resize
+
+
+# Local hardware and build inputs
+.DS_Store
+* 2.sh
+* 2.py
+/fw-*/
+/ssh/
+/logs/
+/out/
+/work/
+/uefi/files/Binaries/z3q/
+/uefi/files/Resources/DTBs/z3q.dtb
+*.pem
+*.key
